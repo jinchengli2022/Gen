@@ -1,0 +1,19 @@
+# Requirements for robosuite data collection
+
+# Core dependencies
+robosuite>=1.5.0
+numpy>=1.21.0
+h5py>=3.7.0
+tqdm>=4.64.0
+opencv-python>=4.6.0
+
+# Optional: for visualization
+matplotlib>=3.5.0
+pillow>=9.0.0
+
+# Optional: for advanced controllers
+scipy>=1.9.0
+
+# Note: MuJoCo installation required
+# Follow instructions at: https://mujoco.org/
+# or https://github.com/openai/mujoco-py

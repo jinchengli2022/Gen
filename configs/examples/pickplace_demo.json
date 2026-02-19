@@ -1,0 +1,23 @@
+{
+    "env_name": "PickPlaceCan",
+    "robots": "Panda",
+    "controller_config": null,
+    "has_renderer": false,
+    "has_offscreen_renderer": true,
+    "use_camera_obs": false,
+    "use_object_obs": true,
+    "reward_shaping": true,
+    "control_freq": 20,
+    "horizon": 500,
+    "camera_names": ["agentview", "robot0_eye_in_hand"],
+    "camera_heights": 224,
+    "camera_widths": 224,
+    "camera_depths": false,
+    "num_episodes": 10,
+    "output_dir": "data/pickplace_demo",
+    "save_format": "hdf5",
+    "policy_type": "random",
+    "use_scripted_policy": false,
+    "ignore_done": false,
+    "hard_reset": true
+}
