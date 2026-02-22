@@ -38,8 +38,12 @@ class DataCollectionConfig:
     save_format: str = "hdf5"  # "hdf5" or "pickle"
     
     # Policy settings
-    policy_type: str = "random"  # "random", "scripted", "human"
+    policy_type: str = "random"  # "random", "scripted", "human", "trajectory_gen"
     use_scripted_policy: bool = False
+    
+    # Trajectory generation settings (MimicGen-style)
+    use_trajectory_generation: bool = False
+    source_demo_path: Optional[str] = None  # Path to source HDF5 demo file
     
     # Additional robosuite settings
     ignore_done: bool = False

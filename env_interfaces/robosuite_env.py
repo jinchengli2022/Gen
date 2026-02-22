@@ -215,6 +215,19 @@ class RoboSuiteDataCollector:
         
         return camera_images
     
+    def get_robot_eef_pose(self) -> np.ndarray:
+        """
+        Get current end-effector pose.
+        
+        Returns:
+            7D pose array (x, y, z, qw, qx, qy, qz)
+        """
+        obs = self.env._get_observations()
+        # robosuite provides eef_pos (3D position) and eef_quat (4D quaternion in wxyz format)
+        pos = obs.get(f"robot0_eef_pos", np.zeros(3))
+        quat = obs.get(f"robot0_eef_quat", np.array([1.0, 0.0, 0.0, 0.0]))  # wxyz format
+        return np.concatenate([pos, quat])
+    
     def close(self):
         """Close the environment."""
         self.env.close()

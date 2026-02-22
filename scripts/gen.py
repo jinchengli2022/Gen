@@ -22,30 +22,97 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from configs.config import DataCollectionConfig
 from env_interfaces.robosuite_env import RoboSuiteDataCollector
 from utils.data_writer import create_data_writer
+from utils.trajectory_generator import TrajectoryGenerator, interpolate_poses, PoseUtils
+from utils.source_loader import SourceDemoLoader
+import robosuite.utils.transform_utils as T
 
 
-class RandomPolicy:
-    """Random policy for testing."""
+class WaypointPolicy:
+    """
+    Policy that follows pre-computed waypoints (EEF poses).
+    Uses inverse kinematics to convert poses to joint actions.
+    """
     
-    def __init__(self, action_dim: int, action_range: tuple = (-1.0, 1.0)):
-        self.action_dim = action_dim
-        self.action_min, self.action_max = action_range
+    def __init__(self, env_interface, waypoint_poses, gripper_actions):
+        """
+        Args:
+            env_interface: Environment interface for pose-to-action conversion
+            waypoint_poses: (N, 4, 4) or (N, 7) array of target EEF poses
+            gripper_actions: (N, 1) array of gripper commands
+        """
+        self.env_interface = env_interface
+        self.gripper_actions = gripper_actions
+        self.current_step = 0
+        self.total_steps = len(waypoint_poses)
         
+        # Convert all poses to 7D format (x,y,z, qw,qx,qy,qz) for consistent handling
+        self.waypoint_poses_7d = []
+        for pose in waypoint_poses:
+            if pose.shape == (4, 4):
+                # Extract position and quaternion from 4x4 matrix
+                pos = pose[:3, 3]
+                quat = T.mat2quat(pose[:3, :3])  # Returns (w,x,y,z)
+                pose_7d = np.concatenate([pos, quat])
+            elif pose.shape == (7,):
+                pose_7d = pose
+            else:
+                raise ValueError(f"Invalid pose shape: {pose.shape}, expected (4,4) or (7,)")
+            self.waypoint_poses_7d.append(pose_7d)
+        
+        self.waypoint_poses_7d = np.array(self.waypoint_poses_7d)
+    
     def get_action(self, observation: dict) -> np.ndarray:
-        return np.random.uniform(
-            self.action_min, 
-            self.action_max, 
-            size=self.action_dim
-        )
+        """Get action for current timestep."""
+        if self.current_step >= self.total_steps:
+            # Return last action if exceeded
+            self.current_step = self.total_steps - 1
+        
+        # Get target pose for this step (7D format)
+        target_pose_7d = self.waypoint_poses_7d[self.current_step]
+        target_pos = target_pose_7d[:3]
+        target_quat = target_pose_7d[3:]  # (w,x,y,z)
+        gripper_action = self.gripper_actions[self.current_step]
+        
+        # Get current pose (also ensure 7D format)
+        current_pose = self.env_interface.get_robot_eef_pose()
+        if current_pose.shape == (4, 4):
+            current_pos = current_pose[:3, 3]
+            current_quat = T.mat2quat(current_pose[:3, :3])
+        elif current_pose.shape == (7,):
+            current_pos = current_pose[:3]
+            current_quat = current_pose[3:]
+        else:
+            raise ValueError(f"Invalid current pose shape: {current_pose.shape}")
+        
+        # Position delta (simple proportional control)
+        pos_delta = target_pos - current_pos
+        
+        # Rotation delta (axis-angle approximation)
+        # For small angle differences, this is a reasonable approximation
+        quat_diff = target_quat - current_quat
+        # Scale rotation (xyz components) for responsiveness
+        rot_delta = quat_diff[1:] * 2.0  # Use xyz components, scale up
+        
+        # Combine into action (pos_delta + rot_delta + gripper)
+        action = np.concatenate([pos_delta, rot_delta, gripper_action])
+        
+        self.current_step += 1
+        return action
     
     def reset(self):
-        pass
+        """Reset policy to start of trajectory."""
+        self.current_step = 0
+    
+    def is_done(self):
+        """Check if all waypoints have been executed."""
+        return self.current_step >= self.total_steps
 
 
 def collect_episode(env: RoboSuiteDataCollector, 
-                   policy: RandomPolicy,
+                   policy,  # Can be RandomPolicy or WaypointPolicy
                    render: bool = False,
-                   verbose: bool = False) -> dict:
+                   verbose: bool = False,
+                   max_steps: int = None) -> dict:
     """Collect a single episode."""
     obs = env.reset()
     policy.reset()
@@ -61,7 +128,11 @@ def collect_episode(env: RoboSuiteDataCollector,
     done = False
     timestep = 0
     
-    while not done:
+    # Set max steps from horizon if not specified
+    if max_steps is None:
+        max_steps = env.env.horizon if hasattr(env.env, 'horizon') else 1000
+    
+    while not done and timestep < max_steps:
         if render:
             # Render all camera views
             camera_images = env.render_multi_view()
@@ -86,6 +157,10 @@ def collect_episode(env: RoboSuiteDataCollector,
         
         obs = next_obs
         timestep += 1
+        
+        # Check if waypoint policy is done
+        if hasattr(policy, 'is_done') and policy.is_done():
+            done = True
         
         if render:
             time.sleep(0.02)
@@ -159,9 +234,23 @@ def main(args):
         traceback.print_exc()
         return
     
-    # Initialize policy
-    policy = RandomPolicy(action_dim=env.action_dim)
-    print(f"\n✓ Random policy initialized")
+    # Initialize trajectory generation
+    source_demo_path = getattr(config, 'source_demo_path', None)
+    use_trajectory_generation = getattr(config, 'use_trajectory_generation', False)
+    
+    if not use_trajectory_generation or not source_demo_path:
+        raise ValueError(
+            "Trajectory generation is required. Please set:\n"
+            "  - use_trajectory_generation: true\n"
+            "  - source_demo_path: <path_to_demo_file>"
+        )
+    
+    print(f"\n✓ Trajectory Generation Mode Enabled")
+    print(f"  Loading source demo from: {source_demo_path}")
+    
+    demo_loader = SourceDemoLoader(source_demo_path)
+    traj_generator = TrajectoryGenerator(env)
+    print(f"✓ Loaded {demo_loader.num_demos} source demonstrations")
     
     # Initialize data writer
     writer = create_data_writer(
@@ -178,11 +267,43 @@ def main(args):
     total_rewards = []
     
     for episode_idx in tqdm(range(config.num_episodes)):
+        # Get source demo
+        src_demo = demo_loader.get_demo(0)  # Use first demo
+        
+        # Use target_poses if available (MimicGen format), otherwise use eef_poses
+        if 'target_poses' in src_demo and src_demo['target_poses'] is not None:
+            src_poses = src_demo['target_poses']  # Already (N, 4, 4) matrices
+        elif 'eef_poses' in src_demo and src_demo['eef_poses'] is not None:
+            # Check if eef_poses are already 4x4 matrices or 7D poses
+            eef_poses = src_demo['eef_poses']
+            if eef_poses.shape[1] == 7:
+                # Convert 7D poses to 4x4 matrices
+                src_poses = []
+                for pose_7d in eef_poses:
+                    pose_mat = PoseUtils.make_pose(pose_7d[:3], T.quat2mat(pose_7d[3:]))
+                    src_poses.append(pose_mat)
+                src_poses = np.array(src_poses)
+            elif len(eef_poses.shape) == 3 and eef_poses.shape[1:] == (4, 4):
+                # Already 4x4 matrices
+                src_poses = eef_poses
+            else:
+                raise ValueError(f"Invalid eef_poses shape: {eef_poses.shape}")
+        else:
+            raise ValueError("No EEF or target poses found in source demo")
+        
+        # Create waypoint policy
+        policy = WaypointPolicy(
+            env_interface=env,
+            waypoint_poses=src_poses,
+            gripper_actions=src_demo['gripper_actions']
+        )
+        
         episode_data = collect_episode(
             env, 
             policy, 
             render=config.has_renderer,
-            verbose=False
+            verbose=False,
+            max_steps=config.horizon
         )
         
         writer.write_episode(episode_data, episode_idx)
