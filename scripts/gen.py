@@ -14,6 +14,9 @@ import numpy as np
 from tqdm import tqdm
 import time
 import cv2
+import logging
+import os
+from datetime import datetime
 
 import sys
 from pathlib import Path
@@ -45,13 +48,13 @@ class WaypointPolicy:
         self.current_step = 0
         self.total_steps = len(waypoint_poses)
         
-        # Convert all poses to 7D format (x,y,z, qw,qx,qy,qz) for consistent handling
+        # Convert all poses to 7D format (x,y,z, x,y,z,w) for consistent handling
         self.waypoint_poses_7d = []
         for pose in waypoint_poses:
             if pose.shape == (4, 4):
                 # Extract position and quaternion from 4x4 matrix
                 pos = pose[:3, 3]
-                quat = T.mat2quat(pose[:3, :3])  # Returns (w,x,y,z)
+                quat = T.mat2quat(pose[:3, :3])  # Returns (x,y,z,w) in robosuite
                 pose_7d = np.concatenate([pos, quat])
             elif pose.shape == (7,):
                 pose_7d = pose
@@ -70,7 +73,7 @@ class WaypointPolicy:
         # Get target pose for this step (7D format)
         target_pose_7d = self.waypoint_poses_7d[self.current_step]
         target_pos = target_pose_7d[:3]
-        target_quat = target_pose_7d[3:]  # (w,x,y,z)
+        target_quat = target_pose_7d[3:]  # (x,y,z,w)
         gripper_action = self.gripper_actions[self.current_step]
         
         # Get current pose (also ensure 7D format)
@@ -84,17 +87,31 @@ class WaypointPolicy:
         else:
             raise ValueError(f"Invalid current pose shape: {current_pose.shape}")
         
-        # Position delta (simple proportional control)
-        pos_delta = target_pos - current_pos
+        # get maximum position and rotation action bounds
+        max_dpos = 0.05
+        max_drot = 0.15
+        # max_dpos = self.env_interface.env.robots[0].composite_controller_config["body_parts"].right.output_max[0]
+        # max_drot = self.env_interface.env.robots[0].composite_controller_config["body_parts"].right.output_max[3]
+
+        # Position delta
+        delta_position = target_pos - current_pos
+        if np.any(np.abs(delta_position) > max_dpos):
+            print(f"[Warning] Step {self.current_step}: Position delta {delta_position} exceeds max_dpos {max_dpos}. Clipping applied.")
+        delta_position = np.clip(delta_position / max_dpos, -1.0, 1.0)
         
-        # Rotation delta (axis-angle approximation)
-        # For small angle differences, this is a reasonable approximation
-        quat_diff = target_quat - current_quat
-        # Scale rotation (xyz components) for responsiveness
-        rot_delta = quat_diff[1:] * 2.0  # Use xyz components, scale up
+        # Rotation delta
+        target_rot = T.quat2mat(target_quat)
+        curr_rot = T.quat2mat(current_quat)
+        delta_rot_mat = target_rot.dot(curr_rot.T)
+        delta_quat = T.mat2quat(delta_rot_mat)
+        delta_rotation = T.quat2axisangle(delta_quat)
+        
+        if np.any(np.abs(delta_rotation) > max_drot):
+            print(f"[Warning] Step {self.current_step}: Rotation delta {delta_rotation} exceeds max_drot {max_drot}. Clipping applied.")
+        delta_rotation = np.clip(delta_rotation / max_drot, -1.0, 1.0)
         
         # Combine into action (pos_delta + rot_delta + gripper)
-        action = np.concatenate([pos_delta, rot_delta, gripper_action])
+        action = np.concatenate([delta_position, delta_rotation, gripper_action])
         
         self.current_step += 1
         return action
@@ -112,9 +129,19 @@ def collect_episode(env: RoboSuiteDataCollector,
                    policy,  # Can be RandomPolicy or WaypointPolicy
                    render: bool = False,
                    verbose: bool = False,
-                   max_steps: int = None) -> dict:
-    """Collect a single episode."""
-    obs = env.reset()
+                   max_steps: int = None,
+                   skip_reset: bool = False,
+                   initial_obs: dict = None) -> dict:
+    """Collect a single episode.
+    
+    Args:
+        skip_reset: 若为 True，不再调用 env.reset()，使用 initial_obs 作为初始观测
+        initial_obs: 当 skip_reset=True 时提供的初始观测
+    """
+    if skip_reset and initial_obs is not None:
+        obs = initial_obs
+    else:
+        obs = env.reset()
     policy.reset()
     
     episode_data = {
@@ -165,18 +192,61 @@ def collect_episode(env: RoboSuiteDataCollector,
         if render:
             time.sleep(0.02)
     
-    # Check success
-    if "success" in info:
+    # Check success - 优先使用 _check_success() 的返回值，因为 robosuite 的 info 字典不含 "success" 键
+    if hasattr(env.unwrapped, '_check_success'):
+        episode_data["success"] = env.unwrapped._check_success()
+        episode_data["failure_reasons"] = getattr(env.unwrapped, 'failure_reasons', [])
+    elif "success" in info:
         episode_data["success"] = info["success"]
-    
-    # Get failure reasons
-    if hasattr(env.unwrapped, 'failure_reasons'):
-        episode_data["failure_reasons"] = env.unwrapped.failure_reasons
     
     if verbose and episode_data.get("failure_reasons"):
         print(f"  Failure: {'; '.join(episode_data['failure_reasons'])}")
     
     return episode_data
+
+
+def setup_logger(output_dir, env_name, seed=None):
+    """
+    设置实时日志记录器，每条记录立即 flush 到文件。
+    
+    Args:
+        output_dir: 输出目录
+        env_name: 环境名称
+        seed: 随机种子（用于日志文件名）
+    
+    Returns:
+        logger: 配置好的 Logger 实例
+        log_path: 日志文件路径
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    seed_str = f"_seed{seed}" if seed is not None else ""
+    log_filename = f"gen_{env_name}{seed_str}_{timestamp}.log"
+    log_path = os.path.join(output_dir, log_filename)
+    
+    logger = logging.getLogger(f"gen_{timestamp}")
+    logger.setLevel(logging.DEBUG)
+    # 防止重复 handler
+    logger.handlers.clear()
+    
+    # 文件 handler — 实时 flush（通过自定义 emit 在每条日志后自动 flush）
+    class FlushFileHandler(logging.FileHandler):
+        def emit(self, record):
+            super().emit(record)
+            if self.stream:
+                self.stream.flush()
+    
+    file_handler = FlushFileHandler(log_path, mode='w', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s | %(levelname)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    
+    logger.addHandler(file_handler)
+    
+    return logger, log_path
 
 
 def main(args):
@@ -201,6 +271,11 @@ def main(args):
         if not config.has_offscreen_renderer:
             config.has_offscreen_renderer = True
     
+    # Set random seed for reproducibility
+    if config.seed is not None:
+        np.random.seed(config.seed)
+        print(f"✓ Random seed set to: {config.seed}")
+    
     print("="*60)
     print("Robosuite Data Collection")
     print("="*60)
@@ -218,6 +293,8 @@ def main(args):
         print(f"  Image size: {config.camera_heights}x{config.camera_widths}")
     if config.controller_config:
         print(f"Controller: {config.controller_config.get('type', 'default')}")
+    if config.seed is not None:
+        print(f"Seed: {config.seed}")
     print("="*60)
     
     # Initialize environment
@@ -253,12 +330,35 @@ def main(args):
     print(f"✓ Loaded {demo_loader.num_demos} source demonstrations")
     
     # Initialize data writer
+    writer_kwargs = {}
+    if config.save_format == "rlds":
+        writer_kwargs["language_instruction"] = config.language_instruction
+        writer_kwargs["image_key_primary"] = "agentview_image"
+        writer_kwargs["image_key_wrist"] = "robot0_eye_in_hand_image"
+    
     writer = create_data_writer(
         output_dir=config.output_dir,
         env_name=config.env_name,
-        format=config.save_format
+        format=config.save_format,
+        **writer_kwargs
     )
     print(f"✓ Data writer initialized")
+    
+    # Initialize real-time logger
+    logger, log_path = setup_logger(config.output_dir, config.env_name, config.seed)
+    writer.set_logger(logger)
+    logger.info("=" * 60)
+    logger.info("Trajectory Generation Log")
+    logger.info("=" * 60)
+    logger.info(f"Environment: {config.env_name}")
+    logger.info(f"Robot: {config.robots}")
+    logger.info(f"Episodes: {config.num_episodes}")
+    logger.info(f"Horizon: {config.horizon}")
+    logger.info(f"Seed: {config.seed}")
+    logger.info(f"Source demo: {source_demo_path}")
+    logger.info(f"Output dir: {config.output_dir}")
+    logger.info("=" * 60)
+    print(f"✓ Real-time log initialized: {log_path}")
     
     # Collect episodes
     print(f"\nCollecting {config.num_episodes} episodes...")
@@ -266,36 +366,76 @@ def main(args):
     failure_stats = {}
     total_rewards = []
     
+    # 具体的生成过程
     for episode_idx in tqdm(range(config.num_episodes)):
         # Get source demo
         src_demo = demo_loader.get_demo(0)  # Use first demo
+
+        # Reset 环境，获取新场景中的物体位姿
+        obs = env.reset()
         
-        # Use target_poses if available (MimicGen format), otherwise use eef_poses
-        if 'target_poses' in src_demo and src_demo['target_poses'] is not None:
-            src_poses = src_demo['target_poses']  # Already (N, 4, 4) matrices
-        elif 'eef_poses' in src_demo and src_demo['eef_poses'] is not None:
-            # Check if eef_poses are already 4x4 matrices or 7D poses
-            eef_poses = src_demo['eef_poses']
-            if eef_poses.shape[1] == 7:
-                # Convert 7D poses to 4x4 matrices
-                src_poses = []
-                for pose_7d in eef_poses:
-                    pose_mat = PoseUtils.make_pose(pose_7d[:3], T.quat2mat(pose_7d[3:]))
-                    src_poses.append(pose_mat)
-                src_poses = np.array(src_poses)
-            elif len(eef_poses.shape) == 3 and eef_poses.shape[1:] == (4, 4):
-                # Already 4x4 matrices
-                src_poses = eef_poses
-            else:
-                raise ValueError(f"Invalid eef_poses shape: {eef_poses.shape}")
-        else:
-            raise ValueError("No EEF or target poses found in source demo")
+        # 获取当前 EEF 位姿
+        current_eef_pose = env.get_robot_eef_pose()
+        
+        # 获取新场景中的物体位姿
+        # 从 subtask_object_signals 确定操作对象和非操作对象
+        obj_signals = src_demo.get('subtask_object_signals', {})
+        obj_poses_src = src_demo.get('object_poses', {})
+        obj_names = list(obj_poses_src.keys())
+        
+        if len(obj_names) < 2:
+            raise ValueError(f"需要至少 2 个物体，当前只有: {obj_names}")
+        
+        # 确定操作对象和非操作对象名称
+        operated_obj_name = None
+        non_operated_obj_name = None
+        if obj_signals:
+            for obj_name, signal in obj_signals.items():
+                if np.any(signal == 1):
+                    operated_obj_name = obj_name
+                else:
+                    non_operated_obj_name = obj_name
+        if operated_obj_name is None:
+            operated_obj_name = obj_names[0]
+        if non_operated_obj_name is None:
+            for n in obj_names:
+                if n != operated_obj_name:
+                    non_operated_obj_name = n
+                    break
+        
+        # 从环境中获取新物体位姿 (7D xyzw 格式)
+        new_operated_obj_pose = env.get_object_pose(operated_obj_name)
+        new_non_operated_obj_pose = env.get_object_pose(non_operated_obj_name)
+        
+        print(f"\n[Episode {episode_idx}] 操作对象: {operated_obj_name}, 非操作对象: {non_operated_obj_name}")
+        print(f"  新操作物体位姿: pos={new_operated_obj_pose[:3]}")
+        print(f"  新非操作物体位姿: pos={new_non_operated_obj_pose[:3]}")
+        
+        # 实时日志：记录场景配置
+        logger.info(f"--- Episode {episode_idx}/{config.num_episodes} ---")
+        logger.info(f"操作对象: {operated_obj_name}, 非操作对象: {non_operated_obj_name}")
+        logger.info(f"EEF 初始位姿: pos={np.array2string(current_eef_pose[:3], precision=4)}")
+        logger.info(f"新 {operated_obj_name} 位姿: pos={np.array2string(new_operated_obj_pose[:3], precision=4)}, "
+                     f"quat={np.array2string(new_operated_obj_pose[3:], precision=4)}")
+        logger.info(f"新 {non_operated_obj_name} 位姿: pos={np.array2string(new_non_operated_obj_pose[:3], precision=4)}, "
+                     f"quat={np.array2string(new_non_operated_obj_pose[3:], precision=4)}")
+        
+        # 使用分段式轨迹变换
+        new_target_poses, new_gripper_actions = traj_generator.transform_demo_to_new_scene(
+            src_demo=src_demo,
+            new_operated_obj_pose=new_operated_obj_pose,
+            new_non_operated_obj_pose=new_non_operated_obj_pose,
+            current_eef_pose=current_eef_pose,
+        )
+        
+        # 实时日志：记录轨迹分段信息
+        logger.info(f"轨迹生成完成: 总步数={len(new_target_poses)}")
         
         # Create waypoint policy
         policy = WaypointPolicy(
             env_interface=env,
-            waypoint_poses=src_poses,
-            gripper_actions=src_demo['gripper_actions']
+            waypoint_poses=new_target_poses,
+            gripper_actions=new_gripper_actions,
         )
         
         episode_data = collect_episode(
@@ -303,22 +443,42 @@ def main(args):
             policy, 
             render=config.has_renderer,
             verbose=False,
-            max_steps=config.horizon
+            max_steps=config.horizon,
+            skip_reset=True,
+            initial_obs=obs,
         )
         
         writer.write_episode(episode_data, episode_idx)
         
         # Track statistics
-        if episode_data["success"]:
+        is_success = episode_data["success"]
+        if is_success:
             success_count += 1
         
         episode_reward = np.sum(episode_data["rewards"])
         total_rewards.append(episode_reward)
+        actual_steps = len(episode_data["actions"])
         
-        # Track failure reasons
-        if "failure_reasons" in episode_data:
-            for reason in episode_data["failure_reasons"]:
+        # Track failure reasons（collect_episode 已调用 _check_success() 并填充 failure_reasons）
+        failure_reasons = episode_data.get("failure_reasons", [])
+        if failure_reasons:
+            for reason in failure_reasons:
                 failure_stats[reason] = failure_stats.get(reason, 0) + 1
+        
+        # 实时日志：记录执行结果（每条轨迹完成后立即写入）
+        status_str = "✓ SUCCESS" if is_success else "✗ FAILED"
+        logger.info(f"执行结果: {status_str} | 实际步数={actual_steps} | reward={episode_reward:.4f}")
+        if not is_success:
+            if failure_reasons:
+                for reason in failure_reasons:
+                    logger.info(f"  失败原因: {reason}")
+            else:
+                logger.info(f"  失败原因: (未知，环境未提供具体原因)")
+        
+        # 实时日志：当前累计统计
+        current_success_rate = 100 * success_count / (episode_idx + 1)
+        logger.info(f"累计统计: 成功={success_count}/{episode_idx + 1} ({current_success_rate:.1f}%) | "
+                     f"平均reward={np.mean(total_rewards):.4f}")
         
         # Print progress
         if (episode_idx + 1) % 10 == 0:
@@ -344,13 +504,37 @@ def main(args):
     print(f"Average reward: {np.mean(total_rewards):.3f} ± {np.std(total_rewards):.3f}")
     print(f"Data saved to: {config.output_dir}")
     
+    # 日志：最终汇总
+    logger.info("=" * 60)
+    logger.info("FINAL SUMMARY")
+    logger.info("=" * 60)
+    logger.info(f"Total episodes: {config.num_episodes}")
+    logger.info(f"Success rate: {success_count}/{config.num_episodes} "
+                 f"({100*success_count/config.num_episodes:.1f}%)")
+    logger.info(f"Average reward: {np.mean(total_rewards):.3f} ± {np.std(total_rewards):.3f}")
+    
     if failure_stats:
         print("\nFailure Analysis:")
         print("-" * 60)
+        logger.info("Failure Analysis:")
         for reason, count in sorted(failure_stats.items(), key=lambda x: x[1], reverse=True):
             percentage = 100 * count / config.num_episodes
             print(f"  {reason}: {count} ({percentage:.1f}%)")
+            logger.info(f"  {reason}: {count} ({percentage:.1f}%)")
     
+    logger.info(f"Data saved to: {config.output_dir}")
+    logger.info(f"Log saved to: {log_path}")
+    logger.info("=" * 60)
+    
+    # 关闭 logger
+    for handler in logger.handlers[:]:
+        try:
+            handler.close()
+        except Exception:
+            pass
+    logger.handlers.clear()
+    
+    print(f"Log saved to: {log_path}")
     print("="*60)
 
 

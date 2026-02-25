@@ -35,7 +35,8 @@ class DataCollectionConfig:
     # Data collection settings
     num_episodes: int = 100
     output_dir: str = "data/robosuite_collected"
-    save_format: str = "hdf5"  # "hdf5" or "pickle"
+    save_format: str = "hdf5"  # "hdf5", "pickle", or "rlds"
+    language_instruction: str = ""  # Task language instruction (required for rlds format)
     
     # Policy settings
     policy_type: str = "random"  # "random", "scripted", "human", "trajectory_gen"
@@ -48,6 +49,9 @@ class DataCollectionConfig:
     # Additional robosuite settings
     ignore_done: bool = False
     hard_reset: bool = True
+    
+    # Reproducibility
+    seed: Optional[int] = None  # Random seed for reproducibility (None = no seed)
     
     # Custom environment settings
     base_path: Optional[str] = None  # Base path for custom assets (e.g., external XML models)

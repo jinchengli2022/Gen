@@ -61,10 +61,25 @@ class SourceDemoLoader:
                             demo_data['object_poses'][obj_name] = datagen_info['object_poses'][obj_name][:]
                     
                     # Extract subtask termination signals if available
+                    # 支持两种路径格式：
+                    #   1. datagen_info/subtask_term_signals/  (旧格式)
+                    #   2. datagen_info/subtask_info/subtask_term_signals/  (generate_demo.py 格式)
                     demo_data['subtask_term_signals'] = {}
                     if 'subtask_term_signals' in datagen_info:
                         for signal_name in datagen_info['subtask_term_signals'].keys():
                             demo_data['subtask_term_signals'][signal_name] = datagen_info['subtask_term_signals'][signal_name][:]
+                    elif 'subtask_info' in datagen_info and 'subtask_term_signals' in datagen_info['subtask_info']:
+                        for signal_name in datagen_info['subtask_info']['subtask_term_signals'].keys():
+                            demo_data['subtask_term_signals'][signal_name] = datagen_info['subtask_info']['subtask_term_signals'][signal_name][:]
+                    
+                    # Extract subtask object signals if available
+                    demo_data['subtask_object_signals'] = {}
+                    if 'subtask_object_signals' in datagen_info:
+                        for obj_name in datagen_info['subtask_object_signals'].keys():
+                            demo_data['subtask_object_signals'][obj_name] = datagen_info['subtask_object_signals'][obj_name][:]
+                    elif 'subtask_info' in datagen_info and 'subtask_object_signals' in datagen_info['subtask_info']:
+                        for obj_name in datagen_info['subtask_info']['subtask_object_signals'].keys():
+                            demo_data['subtask_object_signals'][obj_name] = datagen_info['subtask_info']['subtask_object_signals'][obj_name][:]
                     
                     # Also load actions, rewards, dones if available
                     if 'actions' in demo_group:
@@ -130,6 +145,8 @@ class SourceDemoLoader:
                 print(f"  Object poses: {list(demo['object_poses'].keys())}")
                 if 'subtask_term_signals' in demo:
                     print(f"  Subtask signals: {list(demo['subtask_term_signals'].keys())}")
+                if 'subtask_object_signals' in demo:
+                    print(f"  Object signals: {list(demo['subtask_object_signals'].keys())}")
     
     def get_demo(self, index=0):
         """
@@ -177,7 +194,8 @@ class SourceDemoLoader:
             'target_poses': None,
             'gripper_actions': None,
             'object_poses': {},
-            'subtask_term_signals': {}
+            'subtask_term_signals': {},
+            'subtask_object_signals': {}
         }
         
         # Extract EEF poses
@@ -201,6 +219,11 @@ class SourceDemoLoader:
         if 'subtask_term_signals' in demo:
             for signal_name, signals in demo['subtask_term_signals'].items():
                 segment['subtask_term_signals'][signal_name] = signals[start_step:end_step]
+        
+        # Extract subtask object signals
+        if 'subtask_object_signals' in demo:
+            for obj_name, signals in demo['subtask_object_signals'].items():
+                segment['subtask_object_signals'][obj_name] = signals[start_step:end_step]
         
         return segment
     

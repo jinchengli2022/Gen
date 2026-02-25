@@ -220,13 +220,50 @@ class RoboSuiteDataCollector:
         Get current end-effector pose.
         
         Returns:
-            7D pose array (x, y, z, qw, qx, qy, qz)
+            7D pose array (x, y, z, qx, qy, qz, qw) - xyzw quaternion format
         """
         obs = self.env._get_observations()
-        # robosuite provides eef_pos (3D position) and eef_quat (4D quaternion in wxyz format)
+        # robosuite eef_quat 经过 convert_quat(to="xyzw") 处理，返回的是 xyzw 格式
         pos = obs.get(f"robot0_eef_pos", np.zeros(3))
-        quat = obs.get(f"robot0_eef_quat", np.array([1.0, 0.0, 0.0, 0.0]))  # wxyz format
+        quat = obs.get(f"robot0_eef_quat", np.array([0.0, 0.0, 0.0, 1.0]))  # xyzw format
         return np.concatenate([pos, quat])
+    
+    def get_object_pose(self, obj_name: str) -> np.ndarray:
+        """
+        Get current object pose from simulation.
+        
+        Args:
+            obj_name: 物体名称（如 "yellow_cup", "black_cup"）
+            
+        Returns:
+            7D pose array (x, y, z, qx, qy, qz, qw) - xyzw quaternion format
+        """
+        import robosuite.utils.transform_utils as T
+        
+        # 通过 obj_body_id 获取物体的 body index
+        if hasattr(self.env, 'obj_body_id') and obj_name in self.env.obj_body_id:
+            body_id = self.env.obj_body_id[obj_name]
+        else:
+            # Fallback: 尝试通过 mujoco body name 查找
+            # robosuite 通常在物体名后加 "_main" 后缀
+            try:
+                body_id = self.env.sim.model.body_name2id(f"{obj_name}_main")
+            except ValueError:
+                try:
+                    body_id = self.env.sim.model.body_name2id(obj_name)
+                except ValueError:
+                    raise ValueError(
+                        f"无法找到物体 '{obj_name}'。"
+                        f"可用的 body names: {[self.env.sim.model.body_id2name(i) for i in range(self.env.sim.model.nbody)]}"
+                    )
+        
+        pos = self.env.sim.data.body_xpos[body_id].copy()
+        
+        # body_xquat 返回 wxyz 格式，需要转换为 xyzw
+        quat_wxyz = self.env.sim.data.body_xquat[body_id].copy()
+        quat_xyzw = T.convert_quat(quat_wxyz, to="xyzw")
+        
+        return np.concatenate([pos, quat_xyzw])
     
     def close(self):
         """Close the environment."""

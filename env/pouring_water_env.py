@@ -199,13 +199,16 @@ class PouringWater(ManipulationEnv):
         if self.placement_initializer is not None:
             return
         
-        # Yellow cup placement - slightly forward and to the right
         yellow_cup_x_range = (0.0, 0.1)
         yellow_cup_y_range = (0.0, 0.1)
-        
-        # Black cup placement - forward and to the left
         black_cup_x_range = (-0.1, 0.0)
         black_cup_y_range = (-0.3, -0.2)
+
+        # 固定位置
+        # yellow_cup_x_range = (0.0, 0.0)
+        # yellow_cup_y_range = (0.15, 0.15)
+        # black_cup_x_range = (0.0, 0.0)
+        # black_cup_y_range = (-0.15, -0.15)
         
         self.placement_initializer = SequentialCompositeSampler(name="ObjectSampler")
         
@@ -217,6 +220,7 @@ class PouringWater(ManipulationEnv):
                 x_range=yellow_cup_x_range,
                 y_range=yellow_cup_y_range,
                 rotation=(0.0, 2.0 * np.pi),
+                # rotation=(0.0, 0.0),
                 rotation_axis='z',
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,

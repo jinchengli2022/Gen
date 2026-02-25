@@ -1,12 +1,12 @@
 {
     "env_name": "PouringWater",
-    "robots": "Panda",
+    "robots": "UR5e",
     "controller_config": null,
     "has_renderer": false,
     "has_offscreen_renderer": true,
     "use_camera_obs": true,
     "use_object_obs": true,
-    "reward_shaping": true,
+    "reward_shaping": false,
     "control_freq": 20,
     "horizon": 1000,
     "camera_names": ["agentview", "robot0_eye_in_hand"],
@@ -15,12 +15,14 @@
     "camera_depths": false,
     "num_episodes": 1,
     "output_dir": "data/pouring_water_generated",
-    "save_format": "hdf5",
+    "save_format": "rlds",
+    "language_instruction": "pour the water from the cup into the bowl",
     "policy_type": "trajectory_gen",
     "use_scripted_policy": false,
     "use_trajectory_generation": true,
-    "source_demo_path": "/home/ljc/Git/Gen_VLA_Adapter/gen/source/pouring_demo.hdf5",
+    "source_demo_path": "/home/ljc/Git/Gen_VLA_Adapter/Gen/source/gen_demo.hdf5",
     "ignore_done": false,
     "hard_reset": false,
-    "base_path": null
+    "base_path": null,
+    "seed": 42
 }
