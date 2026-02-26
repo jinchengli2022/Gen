@@ -41,20 +41,10 @@ class RoboSuiteDataCollector:
         # Create robosuite environment
         env_kwargs = config.to_env_kwargs()
         
-        # Handle controller configuration if specified
-        if config.controller_config is not None:
-            if isinstance(config.controller_config, str):
-                # If it's a string, treat it as a controller name (e.g., "BASIC")
-                controller_configs = load_composite_controller_config(
-                    controller=config.controller_config,
-                    robot=config.robots
-                )
-            elif isinstance(config.controller_config, dict):
-                # If it's a dict, pass it directly (assuming it's a full composite controller config)
-                controller_configs = config.controller_config
-            else:
-                raise ValueError(f"controller_config must be str or dict, got {type(config.controller_config)}")
-            
+        # Handle controller configuration
+        # 优先级: controller_config (完整 dict) > controller_type (简称 + 可选 params) > 默认
+        controller_configs = self._build_controller_config(config)
+        if controller_configs is not None:
             env_kwargs["controller_configs"] = controller_configs
         
         # Check if custom environment
@@ -88,6 +78,131 @@ class RoboSuiteDataCollector:
                           if not k.endswith("_image") and not k.endswith("_depth")]
         self.image_keys = [k for k in self.obs_keys if k.endswith("_image")]
         self.depth_keys = [k for k in self.obs_keys if k.endswith("_depth")]
+    
+    @staticmethod
+    def _build_controller_config(config: DataCollectionConfig):
+        """
+        根据配置构建 composite controller 配置。
+        
+        优先级:
+          1. controller_config（完整 dict）: 直接使用
+          2. controller_type（简称）+ controller_params（可选覆盖）: 从默认配置构建
+          3. 都为 None: 返回 None，使用 robosuite 默认
+          
+        支持的 controller_type:
+          - "OSC_POSE": 操作空间位姿控制（默认）
+          - "OSC_POSITION": 操作空间仅位置控制
+          - "JOINT_POSITION": 关节位置控制
+          - "JOINT_VELOCITY": 关节速度控制
+          - "JOINT_TORQUE": 关节扭矩控制
+          - "IK_POSE": 逆运动学（仅 Panda/Sawyer/Baxter）
+        
+        Returns:
+            dict or None: composite controller 配置，或 None 表示使用默认
+        """
+        # Case 1: 完整 controller_config 直接指定
+        if config.controller_config is not None:
+            if isinstance(config.controller_config, str):
+                # 字符串视为 composite controller 名称（如 "BASIC"）
+                return load_composite_controller_config(
+                    controller=config.controller_config,
+                    robot=config.robots
+                )
+            elif isinstance(config.controller_config, dict):
+                return config.controller_config
+            else:
+                raise ValueError(
+                    f"controller_config must be str or dict, got {type(config.controller_config)}"
+                )
+        
+        # Case 2: 通过 controller_type 简称选择
+        controller_type = getattr(config, 'controller_type', None)
+        if controller_type is None:
+            return None  # 使用 robosuite 默认
+
+        # 合法的 arm controller 类型
+        VALID_ARM_TYPES = {
+            "OSC_POSE", "OSC_POSITION",
+            "JOINT_POSITION", "JOINT_VELOCITY", "JOINT_TORQUE",
+            "IK_POSE",
+        }
+        controller_type = controller_type.upper()
+        if controller_type not in VALID_ARM_TYPES:
+            raise ValueError(
+                f"Unsupported controller_type: '{controller_type}'. "
+                f"Valid options: {sorted(VALID_ARM_TYPES)}"
+            )
+        
+        # IK_POSE 仅支持部分机器人
+        if controller_type == "IK_POSE":
+            supported_ik_robots = {"Panda", "Sawyer", "Baxter", "GR1FixedLowerBody"}
+            if config.robots not in supported_ik_robots:
+                raise ValueError(
+                    f"IK_POSE controller is not supported for robot '{config.robots}'. "
+                    f"Supported robots: {sorted(supported_ik_robots)}. "
+                    f"Consider using OSC_POSE instead."
+                )
+        
+        # 先加载该机器人的默认 composite controller 配置
+        base_config = load_composite_controller_config(robot=config.robots)
+        
+        # 找到 arm part 并替换控制器类型
+        body_parts = base_config.get('body_parts', {})
+        # 单臂机器人可能是 body_parts['right']，双臂机器人是 body_parts['arms']['right']
+        arm_part = None
+        if 'right' in body_parts:
+            arm_part = body_parts['right']
+        elif 'arms' in body_parts and 'right' in body_parts['arms']:
+            arm_part = body_parts['arms']['right']
+        
+        if arm_part is None:
+            raise ValueError(
+                f"Cannot find arm controller part in composite config. "
+                f"body_parts keys: {list(body_parts.keys())}"
+            )
+        
+        # 获取对应 controller_type 的默认参数模板
+        type_to_part_file = {
+            "OSC_POSE": "osc_pose",
+            "OSC_POSITION": "osc_position",
+            "JOINT_POSITION": "joint_position",
+            "JOINT_VELOCITY": "joint_velocity",
+            "JOINT_TORQUE": "joint_torque",
+            "IK_POSE": "ik_pose",
+        }
+        import json
+        import importlib
+        robosuite_path = importlib.import_module('robosuite').__path__[0]
+        part_json = f"{robosuite_path}/controllers/config/default/parts/{type_to_part_file[controller_type]}.json"
+        
+        try:
+            with open(part_json, 'r') as f:
+                new_arm_config = json.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"Controller part config not found: {part_json}. "
+                f"This controller type may not be available in your robosuite version."
+            )
+        
+        # 保留 gripper 配置
+        if 'gripper' in arm_part:
+            new_arm_config['gripper'] = arm_part['gripper']
+        
+        # 应用用户自定义参数覆盖
+        controller_params = getattr(config, 'controller_params', None)
+        if controller_params:
+            for key, value in controller_params.items():
+                if key == 'type':
+                    continue  # type 由 controller_type 决定，不允许覆盖
+                new_arm_config[key] = value
+        
+        # 替换 arm part
+        if 'right' in body_parts:
+            body_parts['right'] = new_arm_config
+        elif 'arms' in body_parts and 'right' in body_parts['arms']:
+            body_parts['arms']['right'] = new_arm_config
+        
+        return base_config
         
     def reset(self) -> Dict[str, Any]:
         """
@@ -268,6 +383,32 @@ class RoboSuiteDataCollector:
     def close(self):
         """Close the environment."""
         self.env.close()
+    
+    def get_arm_controller_type(self) -> str:
+        """
+        获取当前 arm 控制器的类型名称。
+        
+        Returns:
+            str: 控制器类型，如 "OSC_POSE", "JOINT_POSITION", "IK_POSE" 等
+        """
+        cfg = self.env.robots[0].composite_controller_config
+        body_parts = cfg.get('body_parts', {})
+        arm_part = body_parts.get('right') or (body_parts.get('arms', {}).get('right'))
+        if arm_part is None:
+            return "UNKNOWN"
+        return arm_part.get('type', 'UNKNOWN')
+    
+    def get_arm_controller_config(self) -> Dict[str, Any]:
+        """
+        获取当前 arm 控制器的完整配置。
+        
+        Returns:
+            dict: arm 控制器配置
+        """
+        cfg = self.env.robots[0].composite_controller_config
+        body_parts = cfg.get('body_parts', {})
+        arm_part = body_parts.get('right') or (body_parts.get('arms', {}).get('right'))
+        return arm_part if arm_part is not None else {}
     
     @property
     def unwrapped(self):

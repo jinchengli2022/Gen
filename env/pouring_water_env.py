@@ -199,10 +199,10 @@ class PouringWater(ManipulationEnv):
         if self.placement_initializer is not None:
             return
         
-        yellow_cup_x_range = (0.0, 0.1)
-        yellow_cup_y_range = (0.0, 0.1)
-        black_cup_x_range = (-0.1, 0.0)
-        black_cup_y_range = (-0.3, -0.2)
+        # yellow_cup_x_range = (0.0, 0.1)
+        # yellow_cup_y_range = (0.0, 0.1)
+        # black_cup_x_range = (-0.1, 0.0)
+        # black_cup_y_range = (-0.3, -0.2)
 
         # 固定位置
         # yellow_cup_x_range = (0.0, 0.0)
@@ -210,6 +210,13 @@ class PouringWater(ManipulationEnv):
         # black_cup_x_range = (0.0, 0.0)
         # black_cup_y_range = (-0.15, -0.15)
         
+        # 犯错位置
+        yellow_cup_x_range = (0.0037, 0.0037)
+        yellow_cup_y_range = (0.061, 0.061)
+        black_cup_x_range = (-0.0949, -0.0949)
+        black_cup_y_range = (-0.2721, -0.2721)
+
+
         self.placement_initializer = SequentialCompositeSampler(name="ObjectSampler")
         
         # Yellow cup sampler
@@ -219,8 +226,9 @@ class PouringWater(ManipulationEnv):
                 mujoco_objects=self.yellow_cup,
                 x_range=yellow_cup_x_range,
                 y_range=yellow_cup_y_range,
-                rotation=(0.0, 2.0 * np.pi),
-                # rotation=(0.0, 0.0),
+                # rotation=(0.0, 2.0 * np.pi),
+                rotation=(-120.0 / 180.0 * np.pi, 120.0 / 180.0 * np.pi),
+                # rotation=(-179.0 / 180.0 * np.pi, -179.0 / 180.0 * np.pi),
                 rotation_axis='z',
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,

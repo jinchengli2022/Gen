@@ -18,6 +18,20 @@ class DataCollectionConfig:
     env_name: str = "PickPlaceCan"  # robosuite environment name
     robots: str = "Panda"  # Robot model: Panda, Sawyer, IIWA, etc.
     controller_config: Optional[Dict[str, Any]] = None
+    # controller_type: 控制器类型简称，用于快速选择预设控制器。
+    #   - null / "OSC_POSE"（默认）: 操作空间控制，输入为归一化的笛卡尔增量 (dx,dy,dz,drx,dry,drz)
+    #   - "JOINT_POSITION": 关节位置控制，输入为目标关节角度
+    #   - "JOINT_VELOCITY": 关节速度控制
+    #   - "JOINT_TORQUE": 关节扭矩控制
+    #   - "IK_POSE": 逆运动学控制器（仅支持 Panda/Sawyer/Baxter，UR5e 不支持）
+    #   - "OSC_POSITION": 仅位置的操作空间控制（无姿态控制）
+    # 若同时指定了 controller_config（完整 dict），则 controller_config 优先。
+    controller_type: Optional[str] = None
+    # controller_params: 控制器参数覆盖（可选）。
+    # 仅当 controller_type 被指定且 controller_config 为 null 时生效。
+    # 用于覆盖对应控制器类型的默认参数，例如：
+    #   {"kp": 200, "output_max": [0.1, 0.1, 0.1, 1.0, 1.0, 1.0]}
+    controller_params: Optional[Dict[str, Any]] = None
     has_renderer: bool = False  # Set to True for visualization
     has_offscreen_renderer: bool = True  # Required for camera observations
     use_camera_obs: bool = True
@@ -45,6 +59,11 @@ class DataCollectionConfig:
     # Trajectory generation settings (MimicGen-style)
     use_trajectory_generation: bool = False
     source_demo_path: Optional[str] = None  # Path to source HDF5 demo file
+    
+    # Speed limit settings (normalized action space, range [0, 1])
+    # 归一化 action 的各分量绝对值不得超过此阈值，用于预处理和运行时限距检测
+    limit_dpos: float = 0.85  # 归一化后位置增量上限
+    limit_drot: float = 1.0   # 归一化后旋转增量上限
     
     # Additional robosuite settings
     ignore_done: bool = False

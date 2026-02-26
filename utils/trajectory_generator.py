@@ -142,6 +142,10 @@ class TrajectoryGenerator:
             env_interface: 环境接口（用于获取当前 EEF 位姿等），可选
         """
         self.env_interface = env_interface
+        self.debug = False          # 是否启用 debug 可视化
+        self.debug_output_dir = ""  # debug 图片输出目录
+        self.physical_limit_dpos = None  # 物理空间限距阈值（米，用于 debug 可视化标注超距点）
+        self.physical_limit_drot = None  # 物理空间限距阈值（弧度）
     
     # ----------------------------------------------------------------
     #  核心入口：分段式轨迹变换
@@ -153,6 +157,7 @@ class TrajectoryGenerator:
         new_operated_obj_pose,
         new_non_operated_obj_pose,
         current_eef_pose=None,
+        episode_idx: int = 0,
     ):
         """
         将源 demo 变换到新的场景配置。
@@ -201,11 +206,11 @@ class TrajectoryGenerator:
         operated_obj_name = seg_info['operated_obj_name']
         non_operated_obj_name = seg_info['non_operated_obj_name']
         
-        print(f"[TrajectoryGenerator] 分段解析完成:")
-        print(f"  操作对象: {operated_obj_name}, 非操作对象: {non_operated_obj_name}")
-        print(f"  Approach: steps [{approach_range[0]}, {approach_range[1]})")
-        print(f"  Grasp:    steps [{grasp_range[0]}, {grasp_range[1]})")
-        print(f"  Move:     steps [{move_range[0]}, {move_range[1]})")
+        # print(f"[TrajectoryGenerator] 分段解析完成:")
+        # print(f"  操作对象: {operated_obj_name}, 非操作对象: {non_operated_obj_name}")
+        # print(f"  Approach: steps [{approach_range[0]}, {approach_range[1]})")
+        # print(f"  Grasp:    steps [{grasp_range[0]}, {grasp_range[1]})")
+        # print(f"  Move:     steps [{move_range[0]}, {move_range[1]})")
         
         # --- 2. 提取源 demo 中物体位姿 ---
         src_operated_obj_poses = src_demo['object_poses'][operated_obj_name]      # (N, 7)
@@ -267,11 +272,33 @@ class TrajectoryGenerator:
             new_approach_gripper, new_grasp_gripper, new_move_gripper
         ], axis=0)
         
-        print(f"[TrajectoryGenerator] 新轨迹生成完成: "
-              f"Approach {len(new_approach_poses)} + "
-              f"Grasp {len(new_grasp_poses)} + "
-              f"Move {len(new_move_poses)} = "
-              f"{len(new_target_poses)} steps")
+        # print(f"[TrajectoryGenerator] 新轨迹生成完成: "
+        #       f"Approach {len(new_approach_poses)} + "
+        #       f"Grasp {len(new_grasp_poses)} + "
+        #       f"Move {len(new_move_poses)} = "
+        #       f"{len(new_target_poses)} steps")
+        
+        # Debug 可视化
+        if self.debug:
+            from utils.trajectory_visualizer import visualize_trajectory
+            visualize_trajectory(
+                approach_poses=new_approach_poses,
+                grasp_poses=new_grasp_poses,
+                move_poses=new_move_poses,
+                approach_gripper=new_approach_gripper,
+                grasp_gripper=new_grasp_gripper,
+                move_gripper=new_move_gripper,
+                new_operated_obj_pose=new_operated_obj_pose,
+                new_non_operated_obj_pose=new_non_operated_obj_pose,
+                current_eef_pose=current_eef_pose,
+                episode_idx=episode_idx,
+                output_dir=self.debug_output_dir,
+                operated_obj_name=operated_obj_name,
+                non_operated_obj_name=non_operated_obj_name,
+                src_poses=src_poses,
+                physical_limit_dpos=self.physical_limit_dpos,
+                physical_limit_drot=self.physical_limit_drot,
+            )
         
         return new_target_poses, new_gripper_actions
     
@@ -322,8 +349,8 @@ class TrajectoryGenerator:
         # 新步数（保持速度一致）
         new_steps = max(int(round(new_total_dist / src_speed)), 2)
         
-        print(f"  [Approach] 源距离={src_total_dist:.4f}, 源步数={n_src}, 速度={src_speed:.6f}")
-        print(f"  [Approach] 新距离={new_total_dist:.4f}, 新步数={new_steps}")
+        # print(f"  [Approach] 源距离={src_total_dist:.4f}, 源步数={n_src}, 速度={src_speed:.6f}")
+        # print(f"  [Approach] 新距离={new_total_dist:.4f}, 新步数={new_steps}")
         
         # 插值
         new_poses = interpolate_poses_slerp(current_eef_pose, new_approach_end, new_steps)
@@ -368,7 +395,7 @@ class TrajectoryGenerator:
         for i in range(n_src):
             new_poses[i] = transform @ src_grasp_poses[i]
         
-        print(f"  [Grasp] 步数={n_src}，刚体变换完成")
+        # print(f"  [Grasp] 步数={n_src}，刚体变换完成")
         
         # 夹爪动作直接复制
         new_gripper = src_grasp_gripper.copy()
@@ -473,10 +500,10 @@ class TrajectoryGenerator:
         new_total_dist_approx = src_total_dist * xy_scale  # 近似
         new_steps = max(int(round(new_total_dist_approx / src_speed)), 2)
         
-        print(f"  [Move] 源XY距离={src_xy_dist:.4f}, 新XY距离={new_xy_dist:.4f}, "
-              f"缩放={xy_scale:.4f}, 旋转={np.degrees(angle_diff):.1f}°")
-        print(f"  [Move] 源Z最高={src_z_max:.4f}, arc峰值={src_arc_peak:.4f}")
-        print(f"  [Move] 源步数={n_src}, 新步数={new_steps}")
+        # print(f"  [Move] 源XY距离={src_xy_dist:.4f}, 新XY距离={new_xy_dist:.4f}, "
+        #       f"缩放={xy_scale:.4f}, 旋转={np.degrees(angle_diff):.1f}°")
+        # print(f"  [Move] 源Z最高={src_z_max:.4f}, arc峰值={src_arc_peak:.4f}")
+        # print(f"  [Move] 源步数={n_src}, 新步数={new_steps}")
         
         # --- 6. 生成新位置 ---
         new_positions = np.zeros((new_steps, 3))
@@ -603,8 +630,8 @@ class TrajectoryGenerator:
                 raise ValueError(f"需要至少 2 个物体的位姿，当前只有: {obj_names}")
             operated_obj_name = obj_names[0]
             non_operated_obj_name = obj_names[1]
-            print(f"  [Warning] 未找到 subtask_object_signals，"
-                  f"默认 '{operated_obj_name}' 为操作对象")
+            # print(f"  [Warning] 未找到 subtask_object_signals，"
+            #       f"默认 '{operated_obj_name}' 为操作对象")
         
         if non_operated_obj_name is None:
             obj_names = list(src_demo.get('object_poses', {}).keys())
