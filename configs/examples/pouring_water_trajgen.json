@@ -15,7 +15,7 @@
     "camera_heights": 256,
     "camera_widths": 256,
     "camera_depths": false,
-    "num_episodes": 100,
+    "num_episodes": 500,
     "output_dir": "data/pouring_water_generated",
     "save_format": "rlds",
     "language_instruction": "pour the water from the cup into the bowl",
