@@ -205,6 +205,38 @@ CUDA_VISIBLE_DEVICES=6 torchrun --standalone --nnodes 1 --nproc-per-node 1 \
     > logs/VLA-Adapter--${data_name}--${current_time}.log 2>&1 &
 ```
 
+### 4.3 模型评测
+
+评测脚本位于 `experiments/robot/gen/run_gen_eval.py`，使用与 `gen.py` **完全相同的环境创建流程**（读取同一份 JSON 配置 → `DataCollectionConfig` → `RoboSuiteDataCollector`），模型推理逻辑则复用 VLA-Adapter 自带的 `run_libero_eval.py` 管线（Action Chunking + 开环执行）。
+
+```bash
+cd /home/ljc/Git/Gen_VLA_Adapter
+
+CUDA_VISIBLE_DEVICES=0 python experiments/robot/gen/run_gen_eval.py \
+    --pretrained_checkpoint <checkpoint_path> \
+    --env_config Gen/configs/examples/pouring_water_trajgen.json \
+    --task_suite_name pouringwater_generated \
+    --num_trials_per_task 50 \
+    --max_steps 600
+```
+
+主要参数说明：
+
+| 参数 | 说明 |
+|------|------|
+| `--pretrained_checkpoint` | 训练好的 VLA-Adapter checkpoint 路径 |
+| `--env_config` | Gen 数据生成用的 JSON 配置（决定环境、机器人、控制器） |
+| `--task_suite_name` | 与训练时一致的数据集名，用于 action 反归一化 |
+| `--num_trials_per_task` | 每个任务评测的 episode 数 |
+| `--max_steps` | 单个 episode 最大步数 |
+| `--task_description` | 自定义任务描述（默认使用配置中的 `language_instruction`） |
+| `--num_open_loop_steps` | 开环执行步数（默认 8，与 `NUM_ACTIONS_CHUNK` 对齐） |
+| `--save_version` | 回放视频保存子目录名 |
+
+评测结果：
+- 终端 + 日志文件输出每个 episode 的成功/失败及累计成功率
+- 每个 episode 自动保存回放 MP4 视频到 `./rollouts/<save_version>/` 目录
+
 ---
 
 ## 5. 配置说明
