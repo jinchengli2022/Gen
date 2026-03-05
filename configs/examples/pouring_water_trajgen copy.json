@@ -18,7 +18,7 @@
     "num_episodes": 500,
     "output_dir": "data/pouring_water_generated",
     "save_format": "rlds",
-    "language_instruction": "grasp the yellow cup to pour water into the black cup",
+    "language_instruction": "pour the water from the cup into the bowl",
     "policy_type": "trajectory_gen",
     "use_scripted_policy": false,
     "use_trajectory_generation": true,
